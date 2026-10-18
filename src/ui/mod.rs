@@ -29,6 +29,7 @@
 //! notifications are not: they stay in the [`Stack`], those not yet shown keep their clocks
 //! stopped (see [`crate::stack`]), and the surface is rebuilt when an output returns.
 
+pub mod bar;
 pub mod paint;
 
 use std::collections::HashMap;
@@ -75,6 +76,7 @@ use crate::layout::{Anchor, Bubble, Content, Frame, Text};
 use crate::notification::{Notification, Reason, Urgency};
 use crate::pixmap::Pixmap;
 use crate::stack::{Added, Stack};
+use crate::volume::{Audio, AudioEvent};
 
 /// `wl_pointer`'s buttons, from `linux/input-event-codes.h`.
 const BTN_LEFT: u32 = 0x110;
@@ -143,6 +145,29 @@ pub struct Osd {
 
     dirty: bool,
     exit: bool,
+
+    /// The volume and brightness bar; see [`bar`].
+    bar: bar::BarSurface,
+    heard: bar::Heard,
+    /// The audio server, while connected.
+    audio: Option<Audio>,
+    /// Where the audio server reports, kept to reconnect with after it goes away.
+    audio_events: calloop::channel::Sender<AudioEvent>,
+    /// The system bus, for logind's `SetBrightness`. Made on the first brightness key.
+    system: Option<zbus::blocking::Connection>,
+    loop_handle: calloop::LoopHandle<'static, Osd>,
+}
+
+/// How long after losing the audio server it is looked for again.
+const AUDIO_RETRY: Duration = Duration::from_secs(5);
+
+/// Removes the control socket on the way out, so a stale one is not left in the runtime directory.
+struct SocketFile(std::path::PathBuf);
+
+impl Drop for SocketFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// Run until the compositor goes away.
@@ -187,6 +212,7 @@ pub fn run(replace: bool) -> Result<(), String> {
 
     let metrics = config.metrics();
     let anchor = config.anchor;
+    let (audio_events, audio_channel) = calloop::channel::channel();
     let mut osd = Osd {
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
@@ -220,7 +246,17 @@ pub fn run(replace: bool) -> Result<(), String> {
         pressed: None,
         dirty: false,
         exit: false,
+        bar: bar::BarSurface::default(),
+        heard: bar::Heard::default(),
+        audio: None,
+        audio_events: audio_events.clone(),
+        system: None,
+        loop_handle: loop_handle.clone(),
     };
+    osd.audio = Audio::start(audio_events);
+    if osd.audio.is_none() {
+        eprintln!("wlrix-osd: libpulse would not start; the volume keys will say so");
+    }
 
     let health = conn.clone();
     WaylandSource::new(conn, event_queue)
@@ -235,6 +271,43 @@ pub fn run(replace: bool) -> Result<(), String> {
             }
         })
         .map_err(|err| format!("could not listen to the bus: {err}"))?;
+
+    let qh_for_audio = qh.clone();
+    loop_handle
+        .insert_source(audio_channel, move |event, _, osd: &mut Osd| {
+            if let calloop::channel::Event::Msg(event) = event {
+                osd.on_audio(&qh_for_audio, event);
+            }
+        })
+        .map_err(|err| format!("could not listen to the audio server: {err}"))?;
+
+    // The keys, from the compositor. Not fatal without: notifications still work, and the
+    // compositor's sends simply go nowhere.
+    let _socket_file = match crate::control::bind() {
+        Ok((socket, path)) => {
+            let qh_for_keys = qh.clone();
+            let source = calloop::generic::Generic::new(
+                socket,
+                calloop::Interest::READ,
+                calloop::Mode::Level,
+            );
+            loop_handle
+                .insert_source(source, move |_, socket, osd: &mut Osd| {
+                    for key in crate::control::drain(socket) {
+                        osd.on_key(&qh_for_keys, key);
+                    }
+                    Ok(calloop::PostAction::Continue)
+                })
+                .map_err(|err| format!("could not listen for keys: {err}"))?;
+            Some(SocketFile(path))
+        }
+        Err(err) => {
+            eprintln!(
+                "wlrix-osd: no key socket ({err}); the volume and brightness keys will do nothing"
+            );
+            None
+        }
+    };
 
     let (reload_ping, reload_source) = calloop::ping::make_ping()
         .map_err(|err| format!("could not create the reload ping: {err}"))?;
@@ -253,12 +326,13 @@ pub fn run(replace: bool) -> Result<(), String> {
         .map_err(|err| format!("initial dispatch failed: {err}"))?;
 
     loop {
-        // Asleep until something happens or the next notification is due to go. Nothing else
-        // needs waking up for.
-        let timeout = osd
-            .stack
-            .next_deadline()
-            .map(|deadline| deadline.saturating_duration_since(Instant::now()));
+        // Asleep until something happens, the next notification is due to go, or the bar is.
+        // Nothing else needs waking up for.
+        let deadline = match (osd.stack.next_deadline(), osd.bar_deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let timeout = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
         if let Err(err) = event_loop.dispatch(timeout, &mut osd) {
             return match health.flush() {
                 // The compositor going away is the ordinary end of a Wayland client's life.
@@ -272,7 +346,9 @@ pub fn run(replace: bool) -> Result<(), String> {
             return Err(format!("protocol error: {err}"));
         }
         osd.expire(&qh);
+        osd.expire_bar();
         osd.draw_if_dirty();
+        osd.draw_bar_if_dirty();
         if osd.exit {
             return Ok(());
         }
@@ -292,6 +368,20 @@ fn resolve_palette(config: &Config) -> &'static Palette {
 }
 
 impl Osd {
+    /// Look for the audio server again in a while. Lost means PipeWire restarted, or the session
+    /// is ending; either way a quiet retry costs nothing.
+    fn restart_audio_later(&self) {
+        let timer = calloop::timer::Timer::from_duration(AUDIO_RETRY);
+        let _ = self
+            .loop_handle
+            .insert_source(timer, |_, _, osd: &mut Osd| {
+                if osd.audio.is_none() {
+                    osd.audio = Audio::start(osd.audio_events.clone());
+                }
+                calloop::timer::TimeoutAction::Drop
+            });
+    }
+
     /// Act on one thing the bus said.
     fn on_bus(&mut self, qh: &QueueHandle<Self>, event: BusEvent) {
         match event {
@@ -301,6 +391,11 @@ impl Osd {
                     self.looks.remove(&id);
                     self.bus.closed(id, Reason::Closed);
                 }
+            }
+            BusEvent::Show { icon, label, value } => {
+                let (icon, bar) = crate::bar::Bar::other(&icon, &label, value);
+                self.show_bar(qh, bar, Some(&icon));
+                return;
             }
             BusEvent::Lost => {
                 eprintln!(
@@ -870,6 +965,9 @@ impl OutputHandler for Osd {
 
 impl LayerShellHandler for Osd {
     fn closed(&mut self, _c: &Connection, qh: &QueueHandle<Self>, layer: &LayerSurface) {
+        if self.bar_closed(layer) {
+            return;
+        }
         // Not the end of the daemon: the compositor closes every layer surface on an output it is
         // removing, which is what a monitor entering power save looks like.
         if self.layer.as_ref().map(WaylandSurface::wl_surface) != Some(layer.wl_surface()) {
@@ -883,10 +981,13 @@ impl LayerShellHandler for Osd {
         &mut self,
         _c: &Connection,
         _q: &QueueHandle<Self>,
-        _layer: &LayerSurface,
+        layer: &LayerSurface,
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
+        if self.bar_configure(layer, &configure) {
+            return;
+        }
         self.configured = true;
         let (width, height) = match configure.new_size {
             (0, 0) => self.requested,

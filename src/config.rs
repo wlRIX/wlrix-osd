@@ -22,6 +22,15 @@
 //! gap = 6                      # between notifications
 //! margin = 12                  # between the stack and the screen edges
 //! body_lines = 6               # the body is cut off, with an ellipsis, past this
+//!
+//! [bar]                        # the volume and brightness bar
+//! duration = 1.5               # seconds it stays up after the last change
+//!
+//! [keys]                       # the volume and brightness keys, bound by the compositor
+//! volume_step = 5              # percent per press
+//! volume_max = 100             # past 100 is amplification
+//! brightness_step = 5          # percent of the panel's range per press
+//! sound = true                 # a click from wlrix-sound as the volume steps
 //! ```
 //!
 //! Read from the user's config directory first, then `/etc/wlrix`; the first file found wins
@@ -56,6 +65,58 @@ pub struct Config {
     pub appearance: AppearanceConfig,
     #[serde(default)]
     pub metrics: MetricsConfig,
+    #[serde(default)]
+    pub bar: BarConfig,
+    #[serde(default)]
+    pub keys: KeysConfig,
+}
+
+/// The on-screen bar the volume and brightness keys put up.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BarConfig {
+    duration: Option<f64>,
+}
+
+impl BarConfig {
+    /// How long the bar stays after the last change. Clamped to something a person can read and
+    /// something that does go away.
+    pub fn duration(&self) -> Duration {
+        Duration::from_secs_f64(self.duration.unwrap_or(1.5).clamp(0.3, 10.0))
+    }
+}
+
+/// What the volume and brightness keys do.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeysConfig {
+    volume_step: Option<u32>,
+    volume_max: Option<u32>,
+    brightness_step: Option<u32>,
+    sound: Option<bool>,
+}
+
+impl KeysConfig {
+    /// Percent per press, 1 to 25.
+    pub fn volume_step(&self) -> u32 {
+        self.volume_step.unwrap_or(5).clamp(1, 25)
+    }
+
+    /// The loudest the up key goes, 100 to 150. Below 100 would be a key that cannot reach the
+    /// level the Audio Panel can; past 150 distorts on anything.
+    pub fn volume_max(&self) -> u32 {
+        self.volume_max.unwrap_or(100).clamp(100, 150)
+    }
+
+    pub fn brightness_step(&self) -> u32 {
+        self.brightness_step.unwrap_or(5).clamp(1, 25)
+    }
+
+    /// Whether the volume keys click. On by default, as on every desktop that has keys like
+    /// these: the click is how the new level is *heard*, which the bar cannot do.
+    pub fn sound(&self) -> bool {
+        self.sound.unwrap_or(true)
+    }
 }
 
 /// How long a notification stays up when its sender left the choice to the server.
@@ -298,6 +359,25 @@ mod tests {
         assert_eq!(metrics.margin, 0);
         assert_eq!(metrics.body_lines, 1);
         assert_eq!(config.max_visible(), 1);
+    }
+
+    #[test]
+    fn the_keys_and_the_bar_have_defaults_and_limits() {
+        let defaults = config("");
+        assert_eq!(defaults.keys.volume_step(), 5);
+        assert_eq!(defaults.keys.volume_max(), 100);
+        assert_eq!(defaults.keys.brightness_step(), 5);
+        assert!(defaults.keys.sound());
+        assert_eq!(defaults.bar.duration(), Duration::from_millis(1500));
+
+        let silly = config(
+            "[bar]\nduration = 99\n[keys]\nvolume_step = 0\nvolume_max = 400\nsound = false\n",
+        );
+        assert_eq!(silly.bar.duration(), Duration::from_secs(10));
+        assert_eq!(silly.keys.volume_step(), 1);
+        assert_eq!(silly.keys.volume_max(), 150);
+        assert!(!silly.keys.sound());
+        assert!(toml::from_str::<Config>("[keys]\nvolume_stepp = 2\n").is_err());
     }
 
     #[test]

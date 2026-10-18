@@ -173,6 +173,29 @@ impl Pixmap {
         }
     }
 
+    /// Every pixel recolored to `color`, keeping its coverage.
+    ///
+    /// For symbolic icons, which are drawn in one gray on the understanding that whoever shows
+    /// them recolors them to the text color -- left as they are, a dark scheme draws them dark
+    /// gray on dark gray.
+    pub fn tinted(&self, color: wlrix_ui::color::Rgb) -> Self {
+        let (r, g, b) = color.channels();
+        let pixels = self
+            .pixels
+            .iter()
+            .map(|&pixel| {
+                let a = pixel >> 24;
+                let scale = |channel: u8| (channel as u32 * a + 127) / 255;
+                (a << 24) | (scale(r) << 16) | (scale(g) << 8) | scale(b)
+            })
+            .collect();
+        Self {
+            width: self.width,
+            height: self.height,
+            pixels,
+        }
+    }
+
     /// Draw with the top-left at `(x, y)`, compositing over what is there.
     pub fn draw(&self, canvas: &mut Canvas, x: i32, y: i32) {
         for row in 0..self.height {
@@ -255,6 +278,16 @@ mod tests {
             0,
             "fully transparent white is nothing at all"
         );
+    }
+
+    #[test]
+    fn tinting_keeps_coverage_and_takes_the_color() {
+        let gray =
+            Pixmap::from_raw(raw(2, 1, 8, true), &[46, 52, 54, 255, 46, 52, 54, 128]).unwrap();
+        let white = gray.tinted(wlrix_ui::color::Rgb(0xff_ffffff));
+        assert_eq!(white.get(0, 0), 0xffffffff);
+        // Half covered: half of white, premultiplied.
+        assert_eq!(white.get(1, 0), 0x80808080);
     }
 
     #[test]

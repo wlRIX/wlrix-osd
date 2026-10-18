@@ -11,8 +11,8 @@ IRIX had no notification daemon, so there is no original to copy. The nearest na
 that is what a notification is: the beveled frame, a titlebar with the application's name, and the message in the
 body. Hovering one gives it the active (gold) frame, as focus would; a critical one has it all the time.
 
-The name is for what comes next: on-screen display bars for volume, brightness and the rest of the laptop keys, in
-the same program. This is step one -- the notifications. See `_docs/wlrix-osd-roadmap.md` in the workspace.
+It is also the on-screen display: the volume, microphone and brightness keys, and the bar that shows what they did.
+See `_docs/wlrix-osd-roadmap.md` in the workspace for what is still to come (actions, history, Do Not Disturb).
 
 ## What it speaks
 
@@ -52,6 +52,39 @@ one it replaced is reported closed with reason 4.
 its whole lifetime until it is shown, and so does one that arrived while the monitors were blanked. Critical
 notifications stay until dismissed, whatever timeout their sender passed, as the specification asks.
 
+## The volume and brightness keys
+
+The compositor binds `XF86AudioRaiseVolume`, `XF86AudioLowerVolume`, `XF86AudioMute`, `XF86AudioMicMute`,
+`XF86MonBrightnessUp` and `XF86MonBrightnessDown`, and sends each press here as one line on a datagram socket,
+`$XDG_RUNTIME_DIR/wlrix-osd.sock` -- `volume up`, `mic-mute`, `brightness down` and so on. A datagram, as the compositor
+asks `wlrix-sound` for sounds: its event loop never waits, and a key pressed with this daemon not running simply does
+nothing. The socket is in the per-user runtime directory, so only this user can send to it.
+
+- **Volume** goes through PipeWire's PulseAudio server (`libpulse`): the default output, `@DEFAULT_SINK@`, and the
+  default input for mic-mute. Steps land on multiples of the step (47 % goes to 50, then 55), every channel moves
+  together so the balance is kept, up stops at `volume_max` and unmutes, and each step clicks through `wlrix-sound`
+  (`audio-volume-change`) unless `sound = false`.
+- **Brightness** is read from `/sys/class/backlight` -- `firmware`, then `platform`, then `raw`, as every desktop
+  prefers -- and set through logind's `Session.SetBrightness`, which the active session may do with no helper, no
+  udev rule and no password. Down never reaches zero, which on most panels is the backlight off.
+
+**The bar** is a second overlay surface, bottom center, with an empty input region -- it takes no clicks at all -- and
+no keyboard: an icon, then the level as IRIX showed one -- the bare number at the top left, what it measures at the top
+right, and IRIX's gauge beneath, its done part ending in the angled black tail -- drawn in the session's scheme. It replaces itself on every
+change and goes `duration` seconds after the last. Symbolic icons are tinted to the scheme's text color.
+
+**It shows for changes made anywhere**, not only by the keys: the daemon subscribes to the audio server, so the Audio
+Panel, `pactl` or a script moving the level brings the bar up too, and switching the default output names the new
+device. The first level heard at startup is not a change and shows nothing.
+
+**Other programs** can put the bar up over D-Bus: `com.wlrix.OSD.Show(icon, label, value)` on `/com/wlrix/OSD`, with
+`value` from 0 to 100, or -1 for no bar.
+
+```console
+$ gdbus call --session --dest com.wlrix.OSD --object-path /com/wlrix/OSD \
+      --method com.wlrix.OSD.Show network-wireless-disabled-symbolic "Wireless off" -- -1
+```
+
 ## Where it sits
 
 One **wlr-layer-shell overlay surface**, anchored to a corner, exactly as big as the stack. Overlay so it is seen
@@ -90,6 +123,15 @@ icon = 48                    # the picture beside the text, square
 gap = 6                      # between notifications
 margin = 12                  # between the stack and the screen edges
 body_lines = 6               # the body is cut off, with an ellipsis, past this
+
+[bar]                        # the volume and brightness bar
+duration = 1.5               # seconds after the last change
+
+[keys]                       # the keys the compositor hands over
+volume_step = 5              # percent per press
+volume_max = 100             # 100 to 150; past 100 is amplification, marked on the bar
+brightness_step = 5          # percent of the panel's range
+sound = true                 # click as the volume steps
 ```
 
 `SIGHUP` re-reads the file; the pidfile is `$XDG_RUNTIME_DIR/wlrix-osd.pid`.

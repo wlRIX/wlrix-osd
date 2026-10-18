@@ -292,9 +292,219 @@ fn more(canvas: &mut Canvas, palette: &Palette, fonts: &mut Fonts, rect: Rect, w
     );
 }
 
+/// The bar's number, top left, and its caption, top right.
+const BAR_NUMBER_PX: f32 = 16.0;
+const BAR_CAPTION_PX: f32 = 13.0;
+/// The level gauge's height, edges included: the IRIX gauge's.
+pub const GAUGE_HEIGHT: i32 = 17;
+
+/// The on-screen bar: a raised Motif panel inside a keyline, the icon at the left, and beside it
+/// the level as IRIX showed one -- the bare number at the top left, over the gauge.
+///
+/// A panel rather than a 4Dwm window, unlike a notification: the bar is not something to act
+/// on -- it has no title, no button and takes no clicks -- and drawing it as a window would
+/// promise all three.
+pub fn osd_bar(
+    canvas: &mut Canvas,
+    palette: &Palette,
+    fonts: &mut Fonts,
+    content: &crate::bar::Bar,
+    picture: Option<&Pixmap>,
+) {
+    use super::bar::ICON;
+    let (width, height) = (canvas.width(), canvas.height());
+    let whole = Rect::new(0, 0, width, height);
+    motif::panel(
+        canvas,
+        whole.inset(OUTLINE),
+        palette.panel,
+        Bevel::raised(palette.panel_top_shadow, palette.panel_bottom_shadow, 2),
+    );
+    canvas.stroke_rect(whole, palette.outer_line);
+
+    let pad = 14;
+    if let Some(picture) = picture {
+        picture.draw(
+            canvas,
+            pad + (ICON - picture.width) / 2,
+            (height - picture.height) / 2,
+        );
+    }
+    let text_x = pad + ICON + pad;
+    let text_w = width - text_x - pad;
+    let text = |canvas: &mut Canvas, fonts: &mut Fonts, face, px, x, area: Rect, line: &str| {
+        let baseline = fonts.centered_baseline(face, px, area);
+        fonts.draw(
+            canvas,
+            TextRun {
+                face,
+                px,
+                x,
+                baseline,
+                color: palette.foreground,
+            },
+            line,
+        );
+    };
+
+    let (Some(number), Some(value)) = (content.number.as_deref(), content.value) else {
+        // No level: the caption alone, centered.
+        let area = Rect::new(text_x, 0, text_w, height);
+        text(
+            canvas,
+            fonts,
+            Face::Bold,
+            BAR_CAPTION_PX,
+            text_x,
+            area,
+            &content.label,
+        );
+        return;
+    };
+    let top = Rect::new(text_x, 10, text_w, 22);
+    text(
+        canvas,
+        fonts,
+        Face::Bold,
+        BAR_NUMBER_PX,
+        text_x,
+        top,
+        number,
+    );
+    let caption_w = fonts.width(Face::Regular, BAR_CAPTION_PX, &content.label);
+    let caption_x = (text_x + text_w - caption_w).max(text_x + 40);
+    text(
+        canvas,
+        fonts,
+        Face::Regular,
+        BAR_CAPTION_PX,
+        caption_x,
+        top,
+        &content.label,
+    );
+
+    let gauge = Rect::new(text_x, top.y + top.h + 6, text_w, GAUGE_HEIGHT);
+    irix_gauge(canvas, palette, gauge, value, content.max);
+}
+
+/// IRIX's level gauge, drawn from the scheme's colors.
+///
+/// From the outside in, as the original is built: a two-pixel sunken bevel cut into the panel;
+/// a one-pixel dark keyline; then the trough, a raised face of its own. The part that is done is
+/// the same face set into it -- a darker line along its top and left, a dark one along its
+/// bottom -- and it ends not square but in the **tail**: a one-pixel black diagonal running down
+/// and to the right, one pixel across for each one down, with a dark pixel beside it as its
+/// shadow. The tail is what reads as the level; its middle sits on the value, so 0 starts it at
+/// the left edge and the full value ends it at the right.
+///
+/// Past 100 % on a scale that allows more, a tick above and below marks where normal ends.
+pub fn irix_gauge(canvas: &mut Canvas, palette: &Palette, rect: Rect, value: u32, max: u32) {
+    // The edge: two rings, graded rather than one shade -- above and left, a third of the way to
+    // the panel's shadow and then two thirds; below and right, the panel's highlight and then the
+    // panel itself. Drawn as one dark two-pixel bevel it merges with the keyline inside it into a
+    // single heavy band, which is not how the original reads.
+    let shade = |amount: u8| palette.panel.blend(palette.panel_bottom_shadow, amount);
+    motif::draw(
+        canvas,
+        rect,
+        Bevel {
+            top_left: shade(85),
+            bottom_right: palette.panel_top_shadow,
+            thickness: 1,
+        },
+    );
+    motif::draw(
+        canvas,
+        rect.inset(1),
+        Bevel {
+            top_left: shade(170),
+            bottom_right: palette.panel,
+            thickness: 1,
+        },
+    );
+    let keyline = rect.inset(2);
+    canvas.stroke_rect(keyline, palette.trough_bottom_shadow);
+
+    // The trough: a raised face, light above and left, dark below and right.
+    let trough = keyline.inset(1);
+    motif::panel(
+        canvas,
+        trough,
+        palette.panel,
+        Bevel::raised(palette.panel_top_shadow, palette.panel_bottom_shadow, 1),
+    );
+
+    // The part that is done lies inside the trough's own edge.
+    let inner = trough.inset(1);
+    if inner.w <= 0 || inner.h <= 0 {
+        return;
+    }
+    let rise = inner.h - 1;
+    let span = (inner.w - rise).max(1);
+    // Where the tail's top is: the tail is `rise` wide, and its middle sits on the value.
+    let tail_top = inner.x + (span as i64 * value.min(max) as i64 / max.max(1) as i64) as i32;
+    let set_in = palette.panel.blend(palette.panel_bottom_shadow, 96);
+    for row in 0..inner.h {
+        let y = inner.y + row;
+        let tail = tail_top + row;
+        if row == 0 {
+            // The done part's top edge, up to where the tail starts.
+            canvas.fill_rect(Rect::new(inner.x, y, tail_top - inner.x, 1), set_in);
+        } else if row == rise {
+            // Its bottom edge, up to where the tail ends.
+            canvas.fill_rect(
+                Rect::new(inner.x, y, tail - inner.x, 1),
+                palette.panel_bottom_shadow,
+            );
+        } else {
+            // Its left edge.
+            canvas.fill_rect(Rect::new(inner.x, y, 1, 1), set_in);
+        }
+        // The tail and its shadow, when the value has moved it off the very edge.
+        if tail > inner.x {
+            canvas.fill_rect(Rect::new(tail - 1, y, 1, 1), palette.panel_bottom_shadow);
+        }
+        if tail >= inner.x && tail < inner.x + inner.w {
+            canvas.fill_rect(Rect::new(tail, y, 1, 1), palette.outer_line);
+        }
+    }
+
+    if max > 100 {
+        let normal = inner.x + (span as i64 * 100 / max as i64) as i32 + rise / 2;
+        canvas.fill_rect(Rect::new(normal, rect.y - 3, 1, 3), palette.outer_line);
+        canvas.fill_rect(Rect::new(normal, rect.y + rect.h, 1, 3), palette.outer_line);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_gauge_has_its_tail_where_the_value_is() {
+        let palette = wlrix_ui::palette::DEFAULT;
+        let (width, height) = (110, GAUGE_HEIGHT);
+        let mut buffer = vec![0u8; (width * height * 4) as usize];
+        let mut canvas = Canvas::new(&mut buffer, width, height);
+        canvas.clear(palette.panel);
+        let rect = Rect::new(0, 0, width, height);
+        irix_gauge(&mut canvas, palette, rect, 50, 100);
+        let black = |x: i32, y: i32| {
+            let at = ((y * width + x) * 4) as usize;
+            u32::from_ne_bytes(buffer[at..at + 4].try_into().unwrap()) == palette.outer_line.0
+        };
+        // The inner area starts four pixels in: bevel (2), keyline (1), the trough's edge (1).
+        let (inner_x, inner_y, inner_h) = (4, 4, height - 8);
+        let rise = inner_h - 1;
+        let span = (width - 8) - rise;
+        let tail_top = inner_x + span / 2;
+        for row in 0..inner_h {
+            assert!(black(tail_top + row, inner_y + row), "tail at row {row}");
+        }
+        // Nothing black at the same rows well away from the tail.
+        assert!(!black(tail_top - 6, inner_y + 3));
+        assert!(!black(tail_top + rise + 6, inner_y + 3));
+    }
     use crate::layout::{Anchor, Content, Text};
 
     struct Measured<'a>(&'a mut Fonts);

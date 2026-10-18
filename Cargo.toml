@@ -43,3 +43,6 @@ freedesktop-icons = "0.4.0"
 # `O_NOFOLLOW` on the pidfile and `signal` for the reload handler. Already in the tree by way of
 # calloop and smithay-client-toolkit.
 libc = "0.2"
+# The default speaker and microphone, through PipeWire's PulseAudio server: set, mute, and be
+# told when anything else changes them. See `src/volume.rs` for why not PipeWire's native API.
+libpulse-binding = "2"

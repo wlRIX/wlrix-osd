@@ -60,6 +60,12 @@ pub const CAPABILITIES: &[&str] = &[
 pub enum BusEvent {
     Notify(Box<Notification>),
     Close(u32),
+    /// `com.wlrix.OSD.Show`: put up the bar with these contents.
+    Show {
+        icon: String,
+        label: String,
+        value: i32,
+    },
     /// Another daemon took the name with `--replace` or its own equivalent. Nothing will be sent
     /// here again, so the loop should go.
     Lost,
@@ -162,6 +168,29 @@ impl Server {
     ) -> zbus::Result<()>;
 }
 
+/// The name and path of wlRIX's own on-screen display interface.
+pub const OSD_NAME: &str = "com.wlrix.OSD";
+pub const OSD_PATH: &str = "/com/wlrix/OSD";
+
+/// `com.wlrix.OSD`: the bar, for programs other than the compositor.
+///
+/// The volume and brightness keys do not come this way -- they arrive on a datagram socket, see
+/// [`crate::control`] -- but a program that changes something worth a glance has no other way to
+/// say so: `wlrix-network` when the radio is switched off, a script turning the keyboard's
+/// backlight up. One method, and it changes nothing but what is on screen.
+struct Osd {
+    sender: calloop::channel::Sender<BusEvent>,
+}
+
+#[zbus::interface(name = "com.wlrix.OSD")]
+impl Osd {
+    /// Show the bar: an icon name from the theme, a line of text, and a level from 0 to 100 --
+    /// or -1 for no level at all.
+    fn show(&self, icon: String, label: String, value: i32) {
+        let _ = self.sender.send(BusEvent::Show { icon, label, value });
+    }
+}
+
 /// The bus, once it is up: what the main loop keeps hold of to emit signals.
 pub struct Bus {
     connection: zbus::blocking::Connection,
@@ -202,6 +231,7 @@ impl Bus {
 pub fn spawn(replace: bool) -> Result<(Bus, calloop::channel::Channel<BusEvent>), String> {
     let (sender, channel) = calloop::channel::channel();
     let lost = sender.clone();
+    let osd = sender.clone();
 
     let connection = zbus::blocking::connection::Builder::session()
         .map_err(|err| format!("no session bus: {err}"))?
@@ -215,6 +245,8 @@ pub fn spawn(replace: bool) -> Result<(Bus, calloop::channel::Channel<BusEvent>)
             },
         )
         .map_err(|err| format!("could not serve {INTERFACE}: {err}"))?
+        .serve_at(OSD_PATH, Osd { sender: osd })
+        .map_err(|err| format!("could not serve {OSD_NAME}: {err}"))?
         .build()
         .map_err(|err| format!("could not connect to the session bus: {err}"))?;
 
@@ -245,6 +277,15 @@ pub fn spawn(replace: bool) -> Result<(Bus, calloop::channel::Channel<BusEvent>)
         zbus::fdo::RequestNameReply::PrimaryOwner | zbus::fdo::RequestNameReply::AlreadyOwner
     ) {
         return Err(taken());
+    }
+
+    // The bar's own name is secondary: without it the notifications still work, and a second
+    // daemon that lost the notification name has already refused to start above.
+    if let Err(err) = connection.request_name_with_flags(
+        OSD_NAME,
+        zbus::fdo::RequestNameFlags::DoNotQueue | zbus::fdo::RequestNameFlags::AllowReplacement,
+    ) {
+        eprintln!("wlrix-osd: could not take {OSD_NAME}: {err}");
     }
 
     watch_for_replacement(&connection, lost)?;

@@ -14,8 +14,14 @@
 //! Between them sit the parts that are neither, and are testable without a bus or a screen:
 //! [`markup`] (the body's tags), [`stack`] (order, replacement and expiry), [`layout`] (where
 //! everything goes), [`pixmap`] and [`icons`] (getting from what a sender named to pixels).
+//!
+//! The on-screen bar is the other half: [`control`] takes the volume and brightness keys from the
+//! compositor, [`volume`] and [`brightness`] change the levels, and [`bar`] says what changed.
 
+pub mod bar;
+pub mod brightness;
 pub mod config;
+pub mod control;
 pub mod dbus;
 pub mod icons;
 pub mod layout;
@@ -24,6 +30,8 @@ pub mod notification;
 pub mod pidfile;
 pub mod pixmap;
 pub mod signals;
+pub mod sound;
 pub mod stack;
 pub mod ui;
+pub mod volume;
 pub mod xdg;
