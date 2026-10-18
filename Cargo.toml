@@ -1,0 +1,45 @@
+[package]
+name = "wlrix-osd"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "wlRIX notifications and on-screen display -- org.freedesktop.Notifications, drawn as 4Dwm windows."
+repository = "https://github.com/wlRIX/wlrix-osd"
+publish = false
+
+[dependencies]
+# The Wayland client. Notifications are one wlr-layer-shell **overlay** surface drawn into a plain
+# shm buffer -- the shape `wlrix-tray` set, whose `ui` module this follows. Like that one it is
+# sized to what it draws, and it asks for a new size every time a notification comes or goes.
+smithay-client-toolkit = "0.19"
+wayland-client = "0.31"
+# The event loop. The Wayland connection, the D-Bus channel and the SIGHUP ping are all sources on
+# one loop, so a notification arriving and a pointer moving arrive the same way and nothing polls.
+calloop = "0.13"
+# 0.3 rather than 0.4, which wants calloop 0.14: 0.13 is what the rest of wlRIX pins.
+calloop-wayland-source = "0.3"
+# D-Bus. This program *is* `org.freedesktop.Notifications`, and while it is running nothing else
+# can be -- mako and dunst are D-Bus activated, so whichever answers first is the one in use.
+#
+# The default `async-io` and `blocking-api` features are kept and `tokio` is deliberately not
+# enabled, as in the tray, `wlrix-idle` and the portal. No async runtime touches the calloop side;
+# see `src/dbus.rs`.
+zbus = "5"
+# The config file. TOML is wlRIX's config format throughout.
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+# The shared UI crate: the canvas, the Motif bevel, the fonts, the image decoder and the palette.
+# Pinned by rev rather than taken by path, so this repo still builds from a fresh standalone clone.
+# `just link-ui` in `wlrix-epoch` patches in a sibling checkout while working on both sides.
+#
+# `image` is on: an application's icon is usually a themed name pointing at an SVG or a PNG, and
+# `image-path` is a file. The *other* image source -- `image-data`, raw RGB(A) straight off the
+# bus -- is decoded here in `src/pixmap.rs`, for the same reason the tray decodes its own
+# `IconPixmap`.
+wlrix-ui = { git = "https://github.com/wlRIX/wlrix-ui", rev = "cea08b546a5977329b600e0c2340864ae993ad52", features = ["image"] }
+# Resolving an `app_icon` name to a file: the icon-theme spec, as `wlrix-tray` and `wlrix-desktop`
+# use it. Same version.
+freedesktop-icons = "0.4.0"
+# `O_NOFOLLOW` on the pidfile and `signal` for the reload handler. Already in the tree by way of
+# calloop and smithay-client-toolkit.
+libc = "0.2"
