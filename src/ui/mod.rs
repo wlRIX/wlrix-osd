@@ -71,6 +71,7 @@ use wlrix_ui::text::{Face, Fonts};
 
 use crate::config::{Config, Metrics};
 use crate::dbus::{Bus, BusEvent};
+use crate::i18n::tr;
 use crate::icons::{DesktopEntries, Icons};
 use crate::layout::{Anchor, Bubble, Content, Frame, Text};
 use crate::notification::{Notification, Reason, Urgency};
@@ -83,7 +84,9 @@ const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 
 /// The title when neither the sender nor its `.desktop` file gave a name.
-const UNNAMED: &str = "Notification";
+fn unnamed() -> &'static str {
+    tr("Notification", "通知")
+}
 
 /// What a notification looks like, worked out once when it arrives rather than every frame.
 struct Look {
@@ -470,7 +473,7 @@ impl Osd {
         .into_iter()
         .flatten()
         .find(|name| !name.trim().is_empty())
-        .unwrap_or(UNNAMED)
+        .unwrap_or(unnamed())
         .to_owned();
 
         Look { title, picture }
@@ -537,7 +540,7 @@ impl Osd {
                 let notification = &entry.notification;
                 let look = looks.get(&entry.id());
                 let content = Content {
-                    title: look.map_or(UNNAMED, |look| look.title.as_str()),
+                    title: look.map_or(unnamed(), |look| look.title.as_str()),
                     summary: &notification.summary,
                     body: &notification.body,
                     picture: look

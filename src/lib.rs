@@ -23,6 +23,7 @@ pub mod brightness;
 pub mod config;
 pub mod control;
 pub mod dbus;
+pub mod i18n;
 pub mod icons;
 pub mod layout;
 pub mod markup;

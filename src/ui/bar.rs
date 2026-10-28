@@ -36,6 +36,7 @@ use super::{Osd, paint};
 use crate::bar::Bar;
 use crate::brightness::{self, Backlight};
 use crate::control::Key;
+use crate::i18n::tr;
 use crate::pixmap::Pixmap;
 use crate::volume::AudioEvent;
 
@@ -298,7 +299,7 @@ impl Osd {
 fn no_audio() -> Bar {
     Bar {
         icon: "audio-volume-muted-symbolic",
-        label: "No sound server".to_owned(),
+        label: tr("No sound server", "サウンドサーバーがありません").to_owned(),
         number: None,
         value: None,
         max: 100,

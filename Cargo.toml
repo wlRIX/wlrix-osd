@@ -1,6 +1,6 @@
 [package]
 name = "wlrix-osd"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "wlRIX notifications and on-screen display -- org.freedesktop.Notifications, drawn as 4Dwm windows."

@@ -11,6 +11,8 @@
 //! The icons are the freedesktop symbolic names every desktop's OSD uses, found through the
 //! configured icon theme -- the `wlrix` theme inherits Adwaita, which has them all.
 
+use crate::i18n::tr;
+
 /// One bar's contents.
 ///
 /// Laid out as IRIX laid out a level: the number at the top left, over the bar, with no percent
@@ -47,13 +49,13 @@ impl Bar {
         };
         let label = match device {
             Some(device) if !device.is_empty() => device.to_owned(),
-            _ => "Volume".to_owned(),
+            _ => tr("Volume", "音量").to_owned(),
         };
         Self {
             icon,
             label,
             number: Some(if muted {
-                "Muted".to_owned()
+                tr("Muted", "ミュート").to_owned()
             } else {
                 percent.to_string()
             }),
@@ -72,9 +74,9 @@ impl Bar {
                 "microphone-sensitivity-high-symbolic"
             },
             label: if muted {
-                "Microphone muted".to_owned()
+                tr("Microphone muted", "マイクはミュート中").to_owned()
             } else {
-                "Microphone on".to_owned()
+                tr("Microphone on", "マイクはオン").to_owned()
             },
             number: None,
             value: None,
@@ -87,14 +89,18 @@ impl Bar {
         match percent {
             Some(percent) => Self {
                 icon: "display-brightness-symbolic",
-                label: "Brightness".to_owned(),
+                label: tr("Brightness", "明るさ").to_owned(),
                 number: Some(percent.to_string()),
                 value: Some(percent),
                 max: 100,
             },
             None => Self {
                 icon: "display-brightness-symbolic",
-                label: "No backlight to adjust".to_owned(),
+                label: tr(
+                    "No backlight to adjust",
+                    "調整できるバックライトがありません",
+                )
+                .to_owned(),
                 number: None,
                 value: None,
                 max: 100,

@@ -31,6 +31,7 @@ use wlrix_ui::motif::{self, Bevel};
 use wlrix_ui::palette::Palette;
 use wlrix_ui::text::{Face, Fonts, Run as TextRun};
 
+use crate::i18n::Language;
 use crate::layout::{
     BEVEL, BODY_PX, BORDER, Bubble, Frame, Line, OUTLINE, SUMMARY_PX, TITLE_PX, face_of,
 };
@@ -272,10 +273,11 @@ fn more(canvas: &mut Canvas, palette: &Palette, fonts: &mut Fonts, rect: Rect, w
     let tones = tones(palette, false);
     piece(canvas, rect.inset(OUTLINE), &tones, false);
     canvas.stroke_rect(rect, palette.outer_line);
-    let label = if waiting == 1 {
-        "1 more notification".to_owned()
-    } else {
-        format!("{waiting} more notifications")
+    let label = match Language::current() {
+        Language::English if waiting == 1 => "1 more notification".to_owned(),
+        Language::English => format!("{waiting} more notifications"),
+        // Japanese has no plural to agree with.
+        Language::Japanese => format!("ほかに {waiting} 件の通知"),
     };
     let width = fonts.width(Face::Bold, MORE_PX, &label);
     let baseline = fonts.centered_baseline(Face::Bold, MORE_PX, rect);
